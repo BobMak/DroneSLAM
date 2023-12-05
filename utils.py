@@ -23,6 +23,10 @@ class TelloContext:
         except Exception as e:
             print(f"failed to enable stream from the drone, {e}")
             raise Exception()
+        return self
+
+    def get_current_state(self):
+        return self.tello.get_current_state()
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         print('disconnecting from Tello')

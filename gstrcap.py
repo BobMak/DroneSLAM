@@ -13,7 +13,7 @@ from gi.repository import Gst
 from utils import TelloContext
 
 
-def main():
+def main(tc: TelloContext):
     # Initialize GStreamer
     Gst.init(None)
     # Define the GStreamer pipeline
@@ -40,16 +40,18 @@ def main():
         f.write(f"{ep_uid},{time.time()}\n")
     # data log file
     with open(f"data/{ep_uid}-data.csv", "w") as f:
-        f.write("timestamp,\n")
+        f.write("timestamp,pitch,roll,yaw,vgx,vgy,vgz,templ,temph,tof,h,bat,baro,time,agx,agy,agz\n")
     # image folder for the episode
     os.makedirs(f"data/{ep_uid}", exist_ok=True)
     # callback for recording the observations
-    def save_obs(img_buff, ep_uid):
+    def save_obs(img_buff, ep_uid, sensor_data):
         # save the latest observation
         cv2.imwrite(f"data/{ep_uid}/{int(time.time() * 1000)}.jpg", img_buff[0])
+        # parse sensor data
+        str_data = ",".join([str(x) for k, x in sensor_data.items()])
         # log the timestamp
         with open(f"data/{ep_uid}-data.csv", "a") as f:
-            f.write(f"{time.time_ns()}\n")
+            f.write(f"{time.time_ns(),str_data}\n")
 
     # Function to retrieve frames from appsink
     def on_new_sample(appsink):
@@ -70,7 +72,8 @@ def main():
                     dtype=np.uint8
                 )
                 # save the observation
-                save_obs(img_buff, ep_uid)
+                sensor_data = tc.get_current_state()
+                save_obs(img_buff, ep_uid, sensor_data)
             return Gst.FlowReturn.OK
     # Connect the callback to the appsink
     appsink.connect("new-sample", on_new_sample)
@@ -78,14 +81,7 @@ def main():
     pipeline.set_state(Gst.State.PLAYING)
     try:
         while True:
-            # Wait for the next frame
             time.sleep(0.1)
-            # Display the resulting frame
-            # frame = cv2.cvtColor(img_buff[0], cv2.COLOR_RGB2BGR)
-            # cv2.imshow('Frame', frame)
-            # # Press Q on keyboard to exit
-            # if cv2.waitKey(1000) & 0xFF == ord('q'):
-            #     break
     except KeyboardInterrupt:
         pass
     except Exception as e:
@@ -99,4 +95,4 @@ if __name__ == "__main__":
     with open("telloid.txt", 'r') as f:
         telloid = f.readline()
     with TelloContext(tello_ssid=telloid) as tc:
-        main()
+        main(tc)
