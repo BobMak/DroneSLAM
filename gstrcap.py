@@ -1,3 +1,5 @@
+import os
+import uuid
 from traceback import print_tb
 
 import cv2
@@ -26,7 +28,29 @@ def main():
     # Create an appsink element to retrieve frames
     appsink = pipeline.get_by_name("appsink0")
     # buffer for the latest observations
-    img_buff = np.zeros((980, 720, 3), dtype=np.uint8)
+    img_buff = np.zeros((3, 720, 960, 3), dtype=np.uint8)
+    # create a data folder if it doesn't exist
+    os.makedirs("data", exist_ok=True)
+    # episode meta data log file
+    if not os.path.exists("data/episode_meta.csv"):
+        with open("data/episode_meta.csv", "w") as f:
+            f.write("ep_uid,timestamp\n")
+    with open("data/episode_meta.csv", "a") as f:
+        ep_uid = str(uuid.uuid4())
+        f.write(f"{ep_uid},{time.time()}\n")
+    # data log file
+    with open(f"data/{ep_uid}-data.csv", "w") as f:
+        f.write("timestamp,\n")
+    # image folder for the episode
+    os.makedirs(f"data/{ep_uid}", exist_ok=True)
+    # callback for recording the observations
+    def save_obs(img_buff, ep_uid):
+        # save the latest observation
+        cv2.imwrite(f"data/{ep_uid}/{int(time.time() * 1000)}.jpg", img_buff[0])
+        # log the timestamp
+        with open(f"data/{ep_uid}-data.csv", "a") as f:
+            f.write(f"{time.time_ns()}\n")
+
     # Function to retrieve frames from appsink
     def on_new_sample(appsink):
         sample = appsink.emit("pull-sample")
@@ -39,11 +63,14 @@ def main():
             if result:
                 # Convert gstreamer data to OpenCV format
                 buffer.unmap(mapinfo)
-                img_buff = np.ndarray(
+                np.roll(img_buff, 1)
+                img_buff[0] = np.ndarray(
                     (height, width, 3),
                     buffer=mapinfo.data,
                     dtype=np.uint8
                 )
+                # save the observation
+                save_obs(img_buff, ep_uid)
             return Gst.FlowReturn.OK
     # Connect the callback to the appsink
     appsink.connect("new-sample", on_new_sample)
@@ -51,10 +78,12 @@ def main():
     pipeline.set_state(Gst.State.PLAYING)
     try:
         while True:
-            frame = cv2.cvtColor(img_buff, cv2.COLOR_RGB2BGR)
-
-            time.sleep(1)
-            # cv2.imshow("cam", frame)
+            # Wait for the next frame
+            time.sleep(0.1)
+            # Display the resulting frame
+            # frame = cv2.cvtColor(img_buff[0], cv2.COLOR_RGB2BGR)
+            # cv2.imshow('Frame', frame)
+            # # Press Q on keyboard to exit
             # if cv2.waitKey(1000) & 0xFF == ord('q'):
             #     break
     except KeyboardInterrupt:
