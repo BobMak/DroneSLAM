@@ -1,3 +1,5 @@
+import argparse
+import sys
 import os
 import uuid
 from traceback import print_tb
@@ -11,6 +13,9 @@ gi.require_version('Gst', '1.0')
 from gi.repository import Gst
 
 from utils import TelloContext
+
+sys.path.append("DPT")
+from DPT.run_monodepth import run
 
 
 def main(tc: TelloContext):
@@ -48,10 +53,10 @@ def main(tc: TelloContext):
         # save the latest observation
         cv2.imwrite(f"data/{ep_uid}/{int(time.time() * 1000)}.jpg", img_buff[0])
         # parse sensor data
-        str_data = ",".join([str(x) for k, x in sensor_data.items()])
+        data = [x for k, x in sensor_data.items()]
         # log the timestamp
         with open(f"data/{ep_uid}-data.csv", "a") as f:
-            f.write(f"{time.time_ns(),str_data}\n")
+            f.write(','.join([str(x) for x in [time.time_ns(), *data]])+'\n')
 
     # Function to retrieve frames from appsink
     def on_new_sample(appsink):
@@ -89,10 +94,24 @@ def main(tc: TelloContext):
     # Clean up
     pipeline.set_state(Gst.State.NULL)
     cv2.destroyAllWindows()
+    return ep_uid
 
 
 if __name__ == "__main__":
     with open("telloid.txt", 'r') as f:
         telloid = f.readline()
     with TelloContext(tello_ssid=telloid) as tc:
-        main(tc)
+        ssid = main(tc)
+    # estimate depth with DPT
+    inp_path = f"data/{ssid}"
+    out_path = f"data/{ssid}-depth"
+    M_WEIGHTS = "dpt_hybrid-midas-501f0c75.pt"
+    run(
+        inp_path,
+        out_path,
+        M_WEIGHTS,
+        "dpt_hybrid",
+        "optimize",
+        False,
+        False,
+    )
