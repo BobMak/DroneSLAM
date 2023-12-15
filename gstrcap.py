@@ -110,23 +110,32 @@ def stream_webcam(ep_uid, cam_id, cbs:list=()):
     with open("data/episode_meta.csv", "a") as f:
         f.write(f"{ep_uid},{time.time()}\n")
     start_time = time.time()
-    while True:
-        print('recording {}s'.format(time.time()-start_time))
-        _, img_buff = cap.read()
-        # save the observation
-        timestamp_ns = time.time_ns()
-        sensor_data = dict()
-        for cb in cbs:
-            cb(img_buff, ep_uid, sensor_data, timestamp_ns)
-        # cv2.imshow("frame", img_buff)
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
+    try:
+        while True:
+            print('recording {}s'.format(time.time()-start_time))
+            _, img_buff = cap.read()
+            # save the observation
+            timestamp_ns = time.time_ns()
+            sensor_data = dict()
+            for cb in cbs:
+                cb(img_buff, ep_uid, sensor_data, timestamp_ns)
+            # cv2.imshow("frame", img_buff)
+            if cv2.waitKey(1) & 0xFF == ord('q'):
+                break
+    except KeyboardInterrupt:
+        print('keyboard interrupt')
+    finally:
+        cap.release()
+        cv2.destroyAllWindows()
+        # remove the last image if the corresponding depth image is not saved
+        if not os.path.exists(f"data/{ep_uid}/depth/{timestamp_ns}.png"):
+            os.remove(f"data/{ep_uid}/image/{timestamp_ns}.jpg")
     return ep_uid
 
 
 if __name__ == "__main__":
     args = argparse.ArgumentParser()
-    args.add_argument("--type", type=str, default="webcam", choices=["drone", "webcam"])
+    args.add_argument("--type", type=str, default="drone", choices=["drone", "webcam"])
     args.add_argument("--telloid", type=str, default=None)
     args.add_argument("--cam", type=str, default="/dev/video0")
     args = args.parse_args()

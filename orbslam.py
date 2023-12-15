@@ -1,40 +1,27 @@
+import copy
 import os
-import re
-import struct
-from pathlib import Path
 
 import cv2
 import numpy as np
-# from matplotlib import pyplot as plt
 import open3d as o3d
 from open3d.cuda.pybind.geometry import Image
 from open3d.cuda.pybind.camera import PinholeCameraIntrinsic
 
-# from python_orb_slam3 import ORBExtractor
 from DPT.util.io import read_pfm
-
-# tello camera intrinsics
-camera_matrix = np.array([[921.170702, 0.000000, 459.904354], [0.000000, 919.018377, 351.238301], [0.000000, 0.000000, 1.000000]])
-distortion = np.array([-0.033458, 0.105152, 0.001256, -0.006647, 0.000000])
+from o3dutils import preprocess_point_cloud, execute_global_registration, refine_registration, full_registration
 
 
-def calaculte_point_cloud(path, use_rgbd_odometry=False, use_cached=False):
+def calaculte_point_cloud(path, use_rgbd_odometry=False, use_cached=False, intrinsic_path="djitello_intrinsic.json"):
     imgs = os.listdir(os.path.join(path, 'image'))
     imgs.sort()
     # camera intrinsic
-    intrinsic = PinholeCameraIntrinsic(960, 720, 921.170702, 919.018377, 459.904354, 351.238301)
-    # orb_extractor = ORBExtractor()
-    imu_data = np.genfromtxt(path + "/data.csv", delimiter=",")[1:]
-    # initial odometry
-    pos = np.zeros((3, 1))
-    vel = np.zeros((3, 1))
-    acc = np.array(imu_data[0, -3:]).reshape(3, 1) / 1e3
-    imgs = imgs[40:]
+    intrinsic = o3d.io.read_pinhole_camera_intrinsic(intrinsic_path)
+    imgs = imgs
     # calculating extrinsic matrices for the sequence of frames
     # either using the IMU odometry, which is more prone to drift,
     # or the RGB-D odometry
     extrinsics = []
-    def get_imu_extrinsic(i):
+    def get_imu_extrinsic(i, imu_data):
         # extrinsic matrix
         ang = np.deg2rad((imu_data[i, 1:4]).reshape(3, 1))
         Rx = np.eye(3)
@@ -57,35 +44,39 @@ def calaculte_point_cloud(path, use_rgbd_odometry=False, use_cached=False):
         extrinsics = np.load(path + "/extrinsics.npy")
     else:
         if use_rgbd_odometry:
-            option = o3d.pipelines.odometry.OdometryOption()
+            option = o3d.pipelines.odometry.OdometryOption(depth_max=5.0, depth_diff_max=0.1)
             odo_init = np.identity(4)
             odo = np.identity(4)
             print(option)
             color = Image(cv2.imread(os.path.join(path, 'image', imgs[0])))
             depth, scale = read_pfm(os.path.join(path, 'depth', imgs[0][:-3] + "pfm"))
-            source_rgbd_image = o3d.geometry.RGBDImage.create_from_color_and_depth(color, Image(scale * depth),
-                                                                        convert_rgb_to_intensity=False, depth_trunc=1.5)
+            target_rgbd_image = o3d.geometry.RGBDImage.create_from_color_and_depth(
+                color, Image(scale * depth), convert_rgb_to_intensity=True, depth_trunc=2.5
+            )
             extrinsics.append(odo_init)
             for i, img in enumerate(imgs[1:], start=1):
                 color = Image(cv2.imread(os.path.join(path, 'image', img)))
                 depth, scale = read_pfm(os.path.join(path, 'depth', img[:-3] + "pfm"))
-                target_rgbd_image = o3d.geometry.RGBDImage.create_from_color_and_depth(color, Image(scale*depth), convert_rgb_to_intensity=False, depth_trunc=50)
+                source_rgbd_image = o3d.geometry.RGBDImage.create_from_color_and_depth(
+                    color, Image(scale*depth), convert_rgb_to_intensity=True, depth_trunc=2.5
+                )
 
                 [success_hybrid_term, trans_hybrid_term,
                  info] = o3d.pipelines.odometry.compute_rgbd_odometry(
                     source_rgbd_image, target_rgbd_image, intrinsic, odo_init,
                     o3d.pipelines.odometry.RGBDOdometryJacobianFromHybridTerm(), option)
                 if success_hybrid_term:
-                    print("Using Hybrid RGB-D Odometry")
-                    odo = odo @ trans_hybrid_term
+                    print(f"Using Hybrid RGB-D Odometry {i}/{len(imgs)}")
+                    odo = trans_hybrid_term @ odo
                     extrinsics.append(odo)
-                    source_rgbd_image = target_rgbd_image
+                    target_rgbd_image = source_rgbd_image
                     continue
                 [success_color_term, trans_color_term,
                  info] = o3d.pipelines.odometry.compute_rgbd_odometry(
                     source_rgbd_image, target_rgbd_image, intrinsic, odo_init,
                     o3d.pipelines.odometry.RGBDOdometryJacobianFromColorTerm(), option)
                 if success_color_term:
+
                     print("Using RGB-D Odometry")
                     odo = odo @ trans_hybrid_term
                     extrinsics.append(odo)
@@ -98,32 +89,94 @@ def calaculte_point_cloud(path, use_rgbd_odometry=False, use_cached=False):
             np.save(path + "/extrinsics.npy", extrinsics)
         else:
             extrinsics.append(np.identity(4))
-            for i, img in enumerate(imgs[1:], start=1):
-                extrinsic = get_imu_extrinsic(i)
+            imu_data = np.genfromtxt(path + "/data.csv", delimiter=",")[1:]
+            # initial odometry
+            pos = np.zeros((3, 1))
+            vel = np.zeros((3, 1))
+            acc = np.array(imu_data[0, -3:]).reshape(3, 1) / 1e3
+            for i, img in enumerate(imgs, start=1):
+                extrinsic = get_imu_extrinsic(i, imu_data)
                 extrinsics.append(extrinsic)
-
+                # update the odometry
+                dt = (imu_data[i, 0] - imu_data[i - 1, 0]) / 1e9
+                vel += acc * dt
+                acc = np.array(imu_data[i, -3:]).reshape(3, 1) / 1e3
+                pos += vel * dt + 0.5 * acc * dt * dt
     pcds = []
+    pcd_final = o3d.geometry.PointCloud()
+
     for i, img in enumerate(imgs, start=1):
         clrimg = cv2.imread(os.path.join(path, 'image', img))
         clrimg = cv2.cvtColor(clrimg, cv2.COLOR_BGR2RGB)
         color = Image(clrimg)
         depth, scale = read_pfm(os.path.join(path, 'depth', img[:-3] + "pfm"))
         # depth = o3d.io.read_image(os.path.join(path+'-depth', img[:-3] + "png"))
-        rgbd = o3d.geometry.RGBDImage.create_from_color_and_depth(color, Image(scale*depth), convert_rgb_to_intensity=False, depth_trunc=1.5)  #  depth_scale=1000, depth_trunc=100.0
+        rgbd = o3d.geometry.RGBDImage.create_from_color_and_depth(color, Image(scale*depth), convert_rgb_to_intensity=False, depth_trunc=2.5)  #  depth_scale=1000, depth_trunc=100.0
         extrinsic = extrinsics[i-1]
         # get a current cloud
         pcd = o3d.geometry.PointCloud.create_from_rgbd_image(rgbd, intrinsic, extrinsic)
         pcds.append(pcd)
-        # update the odometry
-        dt = (imu_data[i, 0] - imu_data[i-1, 0]) / 1e9
-        vel += acc * dt
-        acc = np.array(imu_data[i, -3:]).reshape(3, 1) / 1e3
-        pos += vel * dt + 0.5 * acc * dt * dt
+        # if len(pcds)>1:
+        #     pcd_down_src, pcd_fpfh_src = preprocess_point_cloud(pcds[-1], voxel_size=0.02)
+        #     pcd_down_tgt, pcd_fpfh_tgt = preprocess_point_cloud(pcds[-2], voxel_size=0.02)
+        #     # result_ransac = execute_global_registration(pcd_down_src, pcd_down_tgt, pcd_fpfh_src, pcd_fpfh_tgt, voxel_size=0.02)
+        #     threshold = 0.02
+        #     reg_p2p = o3d.pipelines.registration.registration_icp(
+        #         pcd_down_src, pcd_down_tgt, threshold, extrinsic,
+        #         o3d.pipelines.registration.TransformationEstimationPointToPlane())
+        #
+        #     # refine
+        #     result = refine_registration(pcd_down_src, pcd_down_tgt, reg_p2p.transformation, voxel_size=0.02)
+        #     # pcds[-2].paint_uniform_color([1, 0.706, 0])
+        #     # pcds[-1].paint_uniform_color([0, 0.651, 0.929])
+        #     # pcds[-2].transform(result_ransac.transformation)
+        #     # o3d.visualization.draw_geometries([pcds[-2], pcds[-1]],
+        #     #                                   zoom=0.4559,
+        #     #                                   front=[0.6452, -0.3036, -0.7011],
+        #     #                                   lookat=[1.9892, 2.0208, 1.8945],
+        #     #                                   up=[-0.2779, -0.9482, 0.1556])
+        #     # pcds[-2].transform(result.transformation)
+        #     # result = o3d.pipelines.registration.registration_fgr_based_on_correspondence(
+        #     #     pcd_down_src, pcd_down_tgt, result_ransac.correspondence_set,
+        #     #     o3d.pipelines.registration.FastGlobalRegistrationOption())
+        #     pcds[-1].transform(result.transformation)
+        # pcd_final += pcds[-2]
+
+    # registration and pose graph optimization - local and loop detection
+    voxel_size = 0.02
+    max_correspondence_distance_coarse = voxel_size * 15
+    max_correspondence_distance_fine = voxel_size * 1.5
+    pcds_down = [pdc.voxel_down_sample(voxel_size=voxel_size) for pdc in pcds]
+    for pcd in pcds_down:
+        pcd.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius=voxel_size * 2, max_nn=30))
+    pose_graph = full_registration(pcds_down, max_correspondence_distance_coarse, max_correspondence_distance_fine)
+    print("Optimizing PoseGraph ...")
+    option = o3d.pipelines.registration.GlobalOptimizationOption(
+        max_correspondence_distance=max_correspondence_distance_fine,
+        edge_prune_threshold=0.10,
+        reference_node=0)
+    o3d.pipelines.registration.global_optimization(
+        pose_graph,
+        o3d.pipelines.registration.GlobalOptimizationLevenbergMarquardt(),
+        o3d.pipelines.registration.GlobalOptimizationConvergenceCriteria(),
+        option)
+    for point_id in range(len(pcds_down)):
+        print(pose_graph.nodes[point_id].pose)
+        pcds_down[point_id].transform(pose_graph.nodes[point_id].pose)
+    o3d.visualization.draw_geometries(pcds_down)
+
     # subsample
-    pcds = [pcd.voxel_down_sample(voxel_size=0.01) for pcd in pcds]
-    o3d.visualization.draw_geometries(pcds)
+    # pcds = [pcd.voxel_down_sample(voxel_size=0.05) for pcd in pcds]
+    # o3d.visualization.draw_geometries(pcds)
+    # o3d.visualization.draw_geometries([pcd_final.voxel_down_sample(voxel_size=0.01)])
 
 
 if __name__ == "__main__":
-    calaculte_point_cloud("data/7accc4d7-8d95-4b43-9563-e4d43b53ff29", True, False)  # longer
+    # calaculte_point_cloud("data/43aac46e-560a-4534-8b2a-a97ca337ac49", True, False,)  # longer
+    # intrinsic_path='phoneintrinsic.json'
+    # calaculte_point_cloud("data/7accc4d7-8d95-4b43-9563-e4d43b53ff29", True, True)  # longer
     # calaculte_point_cloud("data/fb17ee6f-0883-4729-8273-2fca53bdaff6", True, True)  # shorter
+    # longer tello
+    # calaculte_point_cloud("data/629b5208-3b84-483a-85bf-401f8cdb7138", True, True)  # longer
+    # slower tello
+    calaculte_point_cloud("data/b8f2da5c-d7d2-4b52-ba95-3e4896064202", True, False)  # longer
