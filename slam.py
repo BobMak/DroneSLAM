@@ -1,17 +1,16 @@
-import copy
+import argparse
 import os
 
 import cv2
 import numpy as np
 import open3d as o3d
 from open3d.cuda.pybind.geometry import Image
-from open3d.cuda.pybind.camera import PinholeCameraIntrinsic
 
 from DPT.util.io import read_pfm
 from o3dutils import preprocess_point_cloud, execute_global_registration, refine_registration, full_registration
 
 
-def calaculte_point_cloud(path, use_rgbd_odometry=False, use_cached=False, intrinsic_path="djitello_intrinsic.json"):
+def calaculte_point_cloud(path, use_rgbd_odometry=False, use_cached=False, optimize_pose=False, intrinsic_path="djitello_intrinsic.json"):
     imgs = os.listdir(os.path.join(path, 'image'))
     imgs.sort()
     # camera intrinsic
@@ -40,7 +39,7 @@ def calaculte_point_cloud(path, use_rgbd_odometry=False, use_cached=False, intri
         extrinsic[0, 3], extrinsic[1, 3], extrinsic[2, 3] = pos[1, 0], pos[0, 0], pos[2, 0]
         extrinsic[3, 3] = 1
         return extrinsic
-    if use_cached:
+    if use_cached and os.path.exists(path + "/extrinsics.npy"):
         extrinsics = np.load(path + "/extrinsics.npy")
     else:
         if use_rgbd_odometry:
@@ -116,67 +115,64 @@ def calaculte_point_cloud(path, use_rgbd_odometry=False, use_cached=False, intri
         # get a current cloud
         pcd = o3d.geometry.PointCloud.create_from_rgbd_image(rgbd, intrinsic, extrinsic)
         pcds.append(pcd)
-        # if len(pcds)>1:
-        #     pcd_down_src, pcd_fpfh_src = preprocess_point_cloud(pcds[-1], voxel_size=0.02)
-        #     pcd_down_tgt, pcd_fpfh_tgt = preprocess_point_cloud(pcds[-2], voxel_size=0.02)
-        #     # result_ransac = execute_global_registration(pcd_down_src, pcd_down_tgt, pcd_fpfh_src, pcd_fpfh_tgt, voxel_size=0.02)
-        #     threshold = 0.02
-        #     reg_p2p = o3d.pipelines.registration.registration_icp(
-        #         pcd_down_src, pcd_down_tgt, threshold, extrinsic,
-        #         o3d.pipelines.registration.TransformationEstimationPointToPlane())
-        #
-        #     # refine
-        #     result = refine_registration(pcd_down_src, pcd_down_tgt, reg_p2p.transformation, voxel_size=0.02)
-        #     # pcds[-2].paint_uniform_color([1, 0.706, 0])
-        #     # pcds[-1].paint_uniform_color([0, 0.651, 0.929])
-        #     # pcds[-2].transform(result_ransac.transformation)
-        #     # o3d.visualization.draw_geometries([pcds[-2], pcds[-1]],
-        #     #                                   zoom=0.4559,
-        #     #                                   front=[0.6452, -0.3036, -0.7011],
-        #     #                                   lookat=[1.9892, 2.0208, 1.8945],
-        #     #                                   up=[-0.2779, -0.9482, 0.1556])
-        #     # pcds[-2].transform(result.transformation)
-        #     # result = o3d.pipelines.registration.registration_fgr_based_on_correspondence(
-        #     #     pcd_down_src, pcd_down_tgt, result_ransac.correspondence_set,
-        #     #     o3d.pipelines.registration.FastGlobalRegistrationOption())
-        #     pcds[-1].transform(result.transformation)
-        # pcd_final += pcds[-2]
 
-    # registration and pose graph optimization - local and loop detection
-    voxel_size = 0.02
+    voxel_size = 0.05
     max_correspondence_distance_coarse = voxel_size * 15
     max_correspondence_distance_fine = voxel_size * 1.5
     pcds_down = [pdc.voxel_down_sample(voxel_size=voxel_size) for pdc in pcds]
-    for pcd in pcds_down:
-        pcd.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius=voxel_size * 2, max_nn=30))
-    pose_graph = full_registration(pcds_down, max_correspondence_distance_coarse, max_correspondence_distance_fine)
-    print("Optimizing PoseGraph ...")
-    option = o3d.pipelines.registration.GlobalOptimizationOption(
-        max_correspondence_distance=max_correspondence_distance_fine,
-        edge_prune_threshold=0.10,
-        reference_node=0)
-    o3d.pipelines.registration.global_optimization(
-        pose_graph,
-        o3d.pipelines.registration.GlobalOptimizationLevenbergMarquardt(),
-        o3d.pipelines.registration.GlobalOptimizationConvergenceCriteria(),
-        option)
-    for point_id in range(len(pcds_down)):
-        print(pose_graph.nodes[point_id].pose)
-        pcds_down[point_id].transform(pose_graph.nodes[point_id].pose)
+    # registration and pose graph optimization - local and loop detection
+    if optimize_pose:
+        for pcd in pcds_down:
+            pcd.estimate_normals(o3d.geometry.KDTreeSearchParamHybrid(radius=voxel_size * 2, max_nn=30))
+        pose_graph = full_registration(pcds_down, max_correspondence_distance_coarse, max_correspondence_distance_fine)
+        print("Optimizing PoseGraph ...")
+        option = o3d.pipelines.registration.GlobalOptimizationOption(
+            max_correspondence_distance=max_correspondence_distance_fine,
+            edge_prune_threshold=0.25,
+            reference_node=0)
+        o3d.pipelines.registration.global_optimization(
+            pose_graph,
+            o3d.pipelines.registration.GlobalOptimizationLevenbergMarquardt(),
+            o3d.pipelines.registration.GlobalOptimizationConvergenceCriteria(),
+            option)
+        for point_id in range(len(pcds_down)):
+            print(pose_graph.nodes[point_id].pose)
+            pcds_down[point_id].transform(pose_graph.nodes[point_id].pose)
     o3d.visualization.draw_geometries(pcds_down)
+    # save
+    os.makedirs(os.path.join(path, "pointclouds"), exist_ok=True)
+    for i, pcd in enumerate(pcds_down):
+        o3d.io.write_point_cloud(os.path.join(path, "pointclouds", f"{i}.ply"), pcd)
 
-    # subsample
-    # pcds = [pcd.voxel_down_sample(voxel_size=0.05) for pcd in pcds]
-    # o3d.visualization.draw_geometries(pcds)
-    # o3d.visualization.draw_geometries([pcd_final.voxel_down_sample(voxel_size=0.01)])
+
+def visualize(path):
+    pcds = []
+    pcds_names = os.listdir(os.path.join(path, "pointclouds"))
+    for pcd_id in pcds_names:
+        pcd = o3d.io.read_point_cloud(os.path.join(path, "pointclouds", pcd_id))
+        pcds.append(pcd)
+    o3d.visualization.draw_geometries(pcds)
 
 
 if __name__ == "__main__":
-    # calaculte_point_cloud("data/43aac46e-560a-4534-8b2a-a97ca337ac49", True, False,)  # longer
-    # intrinsic_path='phoneintrinsic.json'
-    # calaculte_point_cloud("data/7accc4d7-8d95-4b43-9563-e4d43b53ff29", True, True)  # longer
-    # calaculte_point_cloud("data/fb17ee6f-0883-4729-8273-2fca53bdaff6", True, True)  # shorter
-    # longer tello
-    # calaculte_point_cloud("data/629b5208-3b84-483a-85bf-401f8cdb7138", True, True)  # longer
+    args = argparse.ArgumentParser()
+    args.add_argument("--path", help="path to the data folder", default=None)
+    args.add_argument("--mode", default='visualize', choices=['make', 'visualize'])
+    args.add_argument("--use-rgbd-odometry", default=False)
+    args.add_argument("--use-cached", default=False)
+    args.add_argument("--optimize-pose", default=True)
+    args.add_argument("--intrinsic-path", default="djitello_intrinsic.json")
+    args = args.parse_args()
     # slower tello
-    calaculte_point_cloud("data/b8f2da5c-d7d2-4b52-ba95-3e4896064202", True, False)  # longer
+    if args.mode == 'visualize':
+        visualize(args.path)
+    elif args.mode == 'make':
+        calaculte_point_cloud(
+            args.path,
+            use_rgbd_odometry=args.use_rgbd_odometry,
+            use_cached=args.use_cached,
+            optimize_pose=args.optimize_pose,
+            intrinsic_path=args.intrinsic_path,
+        )
+    else:
+        raise ValueError("invalid mode")

@@ -135,7 +135,7 @@ def stream_webcam(ep_uid, cam_id, cbs:list=()):
 
 if __name__ == "__main__":
     args = argparse.ArgumentParser()
-    args.add_argument("--type", type=str, default="drone", choices=["drone", "webcam"])
+    args.add_argument("--type", type=str, default="webcam", choices=["drone", "webcam"])
     args.add_argument("--telloid", type=str, default=None)
     args.add_argument("--cam", type=str, default="/dev/video0")
     args = args.parse_args()
