@@ -18,7 +18,7 @@ visual odometry for accurate odometry tracking.
 
 ## TODO
 
-- [ ] Fix and test extrinsic matrix calculation
+- [x] Fix and test extrinsic matrix calculation
 - [ ] Implement the Extended Kalman Filter
 - [ ] add Kitti dataset format support
 - [ ] Compare with ORB-SLAM3
