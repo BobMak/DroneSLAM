@@ -157,9 +157,9 @@ def visualize(path):
 if __name__ == "__main__":
     args = argparse.ArgumentParser()
     args.add_argument("--path", help="path to the data folder", default=None)
-    args.add_argument("--mode", default='visualize', choices=['make', 'visualize'])
-    args.add_argument("--use-rgbd-odometry", default=False)
-    args.add_argument("--use-cached", default=False)
+    args.add_argument("--mode", default='make', choices=['make', 'visualize'])
+    args.add_argument("--use-rgbd-odometry", default=True)
+    args.add_argument("--use-cached", default=True)
     args.add_argument("--optimize-pose", default=True)
     args.add_argument("--intrinsic-path", default="djitello_intrinsic.json")
     args = args.parse_args()
