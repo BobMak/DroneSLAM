@@ -7,7 +7,7 @@ import open3d as o3d
 from open3d.cuda.pybind.geometry import Image
 
 from DPT.util.io import read_pfm
-from o3dutils import preprocess_point_cloud, execute_global_registration, refine_registration, full_registration
+from o3dutils import full_registration
 
 
 def calaculte_point_cloud(path, use_rgbd_odometry=False, use_cached=False, optimize_pose=False, intrinsic_path="djitello_intrinsic.json"):

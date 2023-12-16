@@ -9,7 +9,6 @@ from djitellopy import Tello
 sys.path.append("DPT")
 import util.io
 from dpt.models import DPTDepthModel
-from dpt.midas_net import MidasNet_large
 from dpt.transforms import Resize, NormalizeImage, PrepareForNet
 
 

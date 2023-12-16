@@ -1,40 +1,5 @@
-# from http://www.open3d.org/docs/release/tutorial/pipelines/global_registration.html
 import numpy as np
 import open3d as o3d
-
-
-def preprocess_point_cloud(pcd, voxel_size):
-    pcd_down = pcd.voxel_down_sample(voxel_size)
-    radius_normal = voxel_size * 2
-    pcd_down.estimate_normals(
-        o3d.geometry.KDTreeSearchParamHybrid(radius=radius_normal, max_nn=30))
-    radius_feature = voxel_size * 5
-    pcd_fpfh = o3d.pipelines.registration.compute_fpfh_feature(
-        pcd_down,
-        o3d.geometry.KDTreeSearchParamHybrid(radius=radius_feature, max_nn=100))
-    return pcd_down, pcd_fpfh
-
-def execute_global_registration(source_down, target_down, source_fpfh,
-                                target_fpfh, voxel_size):
-    distance_threshold = voxel_size * 1.5
-    result = o3d.pipelines.registration.registration_ransac_based_on_feature_matching(
-        source_down, target_down, source_fpfh, target_fpfh, True,
-        distance_threshold,
-        o3d.pipelines.registration.TransformationEstimationPointToPoint(False),
-        3, [
-            o3d.pipelines.registration.CorrespondenceCheckerBasedOnEdgeLength(
-                0.9),
-            o3d.pipelines.registration.CorrespondenceCheckerBasedOnDistance(
-                distance_threshold)
-        ], o3d.pipelines.registration.RANSACConvergenceCriteria(100000, 0.999))
-    return result
-
-def refine_registration(source, target, result_ransac_transformation, voxel_size):
-    distance_threshold = voxel_size * 0.4
-    result = o3d.pipelines.registration.registration_icp(
-        source, target, distance_threshold, result_ransac_transformation,
-        o3d.pipelines.registration.TransformationEstimationPointToPlane())
-    return result
 
 # from http://www.open3d.org/docs/latest/tutorial/Advanced/multiway_registration.html
 def pairwise_registration(source, target, max_correspondence_distance_coarse, max_correspondence_distance_fine):
